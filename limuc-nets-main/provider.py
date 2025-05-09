@@ -112,12 +112,15 @@ def plot_confusion_matrix_and_save(cm,
     plt.show()
 
 
-def save_confusion_matrix(cm,
+def save_confusion_matrix(args, cm,
                           target_names,
                           path,
+                          fold,
                           title='Confusion matrix',
                           cmap=None,
-                          normalize=True):
+                          normalize=True,
+                          is_remission = False
+                         ):
     """
     given a sklearn confusion matrix (cm), make a nice plot
 
@@ -153,44 +156,145 @@ def save_confusion_matrix(cm,
     import matplotlib.pyplot as plt
     import numpy as np
     import itertools
+    
+#     plt.rcParams["font.weight"] = "bold"
+#     plt.rcParams["axes.labelweight"] = "bold"
+#     plt.rcParams["axes.titleweight"] = "bold"
+#     plt.rcParams['font.family'] = 'Times New Roman'
 
     accuracy = np.trace(cm) / float(np.sum(cm))
     misclass = 1 - accuracy
 
     if cmap is None:
         cmap = plt.get_cmap('Blues')
+    
+#     plt.title(title)
+#     plt.colorbar()
 
-    # plt.figure(figsize=(8, 6))
-    plt.imshow(cm, interpolation='nearest', cmap=cmap)
-    plt.title(title)
-    plt.colorbar()
-
+    if is_remission:
+        plt.figure(figsize=(10, 10))
+        plt.imshow(cm, interpolation='nearest', cmap=cmap)
+        
+        dig_fontsize = 40
+        other_fontsize = 40
+    else:
+        plt.figure(figsize=(10, 10))
+        plt.imshow(cm, interpolation='nearest', cmap=cmap)
+        
+        dig_fontsize = 33
+        other_fontsize = 38
+        
     if target_names is not None:
         tick_marks = np.arange(len(target_names))
-        plt.xticks(tick_marks, target_names, rotation=45)
-        plt.yticks(tick_marks, target_names)
+        plt.xticks(tick_marks, target_names, rotation=45, fontsize=other_fontsize-5)
+        plt.yticks(tick_marks, target_names,fontsize=other_fontsize-5)
 
     if normalize:
         cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
 
-    thresh = cm.max() / 1.1 if normalize else cm.max() / 2
+    thresh = cm.max() / 1.1 if normalize else cm.max() / 1.3
     for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
         if normalize:
-            plt.text(j, i, "{:0.4f}".format(cm[i, j]),
+            plt.text(j, i, "{:0.3f}".format(cm[i, j]),
                      horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black")
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=dig_fontsize)
         else:
             plt.text(j, i, "{:,}".format(cm[i, j]),
                      horizontalalignment="center",
-                     color="white" if cm[i, j] > thresh else "black")
-
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=dig_fontsize)  
+    
+    plt.ylabel('True label', fontsize=other_fontsize, labelpad=15)
+    plt.xlabel('Predicted label', fontsize=other_fontsize, labelpad=15)
+    
+    plt.tick_params(axis='x', which='both', pad=15)  # x 轴方向增加 padding，使 xlabel 离刻度更远
+    plt.tick_params(axis='y', which='both', pad=15)  # y 轴方向增加 padding
+    
+#     if fold < (2-1):
+#         plt.title(f"Confusion Matrix for {args.model_name} {args.loss} fold {fold}", fontsize=40, pad=25)
+#     else:
+#         plt.title(f"Confusion Matrix for {args.model_name}", fontsize=40, pad=25)
+    
     plt.tight_layout()
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label\naccuracy={:0.4f}; misclass={:0.4f}'.format(accuracy, misclass))
+    if is_remission:
+        plt.subplots_adjust(left=0.5, bottom=0.5)  # 增加底部边距
+    else:
+        plt.subplots_adjust(left=0.3, bottom=0.3)
+    
     plt.savefig(path)
     # plt.show()
     plt.close()
+    
+# Function to generate a Grad-CAM heatmap
+def gen_cam(img, mask,i, fold):
+    
+    import matplotlib.pyplot as plt
+    
+    '''
+        image: 原始输入图像，归一化到[0.1] 范围的NumPy数组，形状为（H，W，3）
+        mask:  Grad-CAM 生成的热力图掩码，二维数组（H,W), 值在[0,1], 表示每个像素的重要性
+    '''
+    img = img.cpu()
+    img = unnormalize(img)
+    img = img.squeeze(0)
+    
+    # Step 4: 手动提取通道并组合成 RGB 图像
+    r_channel = img[0, :, :]  # 提取红色通道
+    g_channel = img[1, :, :]  # 提取绿色通道
+    b_channel = img[2, :, :]  # 提取蓝色通道
 
+    # 合并为 RGB 图像
+    rgb_image = np.stack([r_channel, g_channel, b_channel], axis=-1)  # 形状变为 (H, W, C) 
+    
+    rgb_image = np.array(rgb_image)           # 转换为 NumPy 数组
+    img = rgb_image.astype(np.float32)  # 确保数据类型为 float32
+    
+    root_path_orin = f'../saves/save_image/orin/fold_{fold}/'
+    path_orin = os.path.join(root_path_orin,f'orin_{i}.png')
+    
+    os.makedirs(root_path_orin, exist_ok=True)
+    
+    plt.imshow(img)  # 显示图像
+    plt.axis('off')  # 关闭坐标轴
+    plt.savefig(path_orin)
+
+#     print(type(img))  # 应该输出 <class 'numpy.ndarray'>
+#     print(img.shape)  # 应该输出类似 (height, width, channels)
+#     print(img.dtype)  # 应该输出 uint8 或 float32
+
+    # 检查并归一化图像
+    if np.max(img) > 1:
+        img = img / 255  # 如果像素值超过 [0, 1]，进行归一化
+    
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    
+    # Create a heatmap from the Grad-CAM mask
+    heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)   
+    
+    heatmap = np.float32(heatmap) / 255
+    cam = (1 - 0.7) * heatmap + 0.7 * img             # 原始图像与热力图叠加
+    cam = cam / np.max(cam)  # Normalize the result           # 归一化叠加结果，去报像素值不超出范围
+    return np.uint8(255 * cam)  # Convert to 8-bit image       #将图像值缩放到 [0,255]后转化为8位无符号整数格式
+
+
+import torch
+
+def unnormalize(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    """
+    输入图像形状为 (C, H, W)，对其进行反标准化。
+    """
+    # 将均值和标准差扩展为 (C, 1, 1) 形状，以便广播
+    mean = torch.tensor(mean).view(3, 1, 1)
+    std = torch.tensor(std).view(3, 1, 1)
+    
+    # 反标准化
+    img = img * std + mean
+    
+    # 确保像素值在 [0, 1] 范围内
+    img = torch.clamp(img, 0, 1)
+    
+    return img
 
 def plot_confusion_matrix(cm,
                           target_names,
@@ -519,38 +623,106 @@ def initialize_model(args,model_name, pretrained, num_classes):
     import torchvision.models as models
 
     model = None
+
+    if model_name == "VGG16_bn":
+        if pretrained:
+            model = models.vgg16_bn(pretrained=True)
+        else:
+            model = models.vgg16_bn()
+        in_features = model.classifier[6].in_features
+        model.classifier[6] = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "ResNet18":
+        if pretrained:
+            model = models.resnet18(pretrained=True)
+        else:
+            model = models.resnet18()
+        in_features = model.fc.in_features
+        model.fc = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "ResNet50":
+        if pretrained:
+            model = models.resnet50(pretrained=True)
+        else:
+            model = models.resnet50()
+        in_features = model.fc.in_features
+        model.fc = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "ResNet152":
+        if pretrained:
+            model = models.resnet152(pretrained=True)
+        else:
+            model = models.resnet152()
+        in_features = model.fc.in_features
+        model.fc = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "DenseNet121":
+        if pretrained:
+            model = models.densenet121(pretrained=True)
+        else:
+            model = models.densenet121()
+        in_features = model.classifier.in_features
+        model.classifier = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "Inception_v3":
+        if pretrained:
+            model = models.inception_v3(pretrained=True, transform_input=False)
+        else:
+            model = models.inception_v3(transform_input=False)
+        in_features = model.fc.in_features
+        aux_in_features = model.AuxLogits.fc.in_features
+
+        model.AuxLogits.fc = torch.nn.Linear(aux_in_features, num_classes)
+        model.fc = torch.nn.Linear(in_features, num_classes)
+
+    elif model_name == "mobilenet_v3_large":
+        if pretrained:
+            model = models.mobilenet_v3_large(pretrained=True)
+        else:
+            model = models.mobilenet_v3_large()
+        in_features = model.classifier[3].in_features
+        model.classifier[3] = torch.nn.Linear(in_features, num_classes)
+    
+    elif model_name == "DeiT":
+        # 加载预训练模型
+        model = create_model("deit_base_distilled_patch16_224", pretrained=False, num_classes=4)
+
+        # 调整分类头
+        if pretrained:
+            in_features = model.head.in_features  # 获取分类头的输入维度
+            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+    elif model_name == "DeiT-384":
+        model = create_model("deit_base_distilled_patch16_384",pretrained=True, num_classes=4)
         
-    if model_name == "coatnet_0":
-        model = create_model("coatnet_0_rw_224",pretrained=True, num_classes=4)
-
-    elif model_name == "coatnet_1":
-        model = create_model("coatnet_1_rw_224",pretrained=True, num_classes=4)
-
+        # 调整分类头
+        if pretrained:
+            in_features = model.head.in_features  # 获取分类头的输入维度
+            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+    elif model_name == "Deit3_huge":
+        model = create_model("deit3_huge_patch14_224",pretrained=True, num_classes=4)
+        
+        # 调整分类头
+        if pretrained:
+            in_features = model.head.in_features  # 获取分类头的输入维度
+            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
     elif model_name == "coatnet_2":
         model = create_model("coatnet_2_rw_224",pretrained=True, num_classes=4)
         
-    elif model_name == "coatnet_3":
-        model = create_model("coatnet_3_rw_224",pretrained=True, num_classes=4)
-        
-    elif model_name == "deit":
-        # 加载预训练模型
-        model = create_model("deit_base_distilled_patch16_224", pretrained=False, num_classes=4)
-            
-    elif model_name == 'maxvit':
-        model = create_model("maxvit_rmlp_base_rw_224.sw_in12k_ft_in1k",pretrained=True, num_classes=args.nb_classes)
-        
+        # 调整分类头
+        if pretrained:
+            in_features = model.head.in_features  # 获取分类头的输入维度
+            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+
     elif model_name == 'overlock_b':
         model = create_model("overlock_b",pretrained=False, num_classes=4)
-        
+
+        # 调整分类头
+        if pretrained:
+            in_features = model.head.in_features  # 获取分类头的输入维度
+            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
     else:
         print("Invalid model name!")
         exit()
-        
-    # 调整分类头
-    if pretrained:
-        in_features = model.head.in_features  # 获取分类头的输入维度
-        model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
-    
 
     return model
 
@@ -1250,20 +1422,13 @@ def index_calculation(args, *,y_true, y_probs, y_pred, r_true, r_probs, r_pred, 
 #=======================================================================================================================================
 
 # 假设 model 是通过 timm.create_model 创建的
-def check_and_adjust_pos_embed(args, model, checkpoint_model, new_input_size):
+def check_and_adjust_pos_embed(model, checkpoint_model, new_input_size):
     # 获取模型的补丁数量和嵌入维度
     if hasattr(model, 'patch_embed'):
         num_patches = model.patch_embed.num_patches
         print(f"------------------num_patches:{num_patches}-----------------------")
         embedding_size = model.pos_embed.shape[-1]
         print(f"++++++++++++++++++++++embedding_size : {embedding_size}++++++++++++++++++")
-        
-        num_extra_tokens = 1
-        
-        if args.model_name == 'deit':
-            num_extra_tokens = model.pos_embed.shape[-2] - num_patches
-            
-        patch_size = 16
     else:
         # 假设模型使用卷积层生成补丁嵌入
         input_size = new_input_size
@@ -1271,7 +1436,7 @@ def check_and_adjust_pos_embed(args, model, checkpoint_model, new_input_size):
         num_patches = (input_size // patch_size) ** 2
         embedding_size = 768
 
-        num_extra_tokens = 1
+    num_extra_tokens = 1
 
     # 初始化或提取位置嵌入
     if 'pos_embed' in checkpoint_model:

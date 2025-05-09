@@ -29,9 +29,22 @@ from engine import get_test_set_results
 from provider import index_calculation,check_and_adjust_pos_embed
 from losses import ClassDistanceWeightedLoss
 from utils import get_img_num_per_cls, get_mlist
+
+import sys
+import os
+
+# 获取当前文件的绝对路径
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 获取 B_fold 文件夹的父目录路径
+b_parent_dir = os.path.join(current_dir, '..', 'OverLoCK_main', 'models')
+
+# 将 B_fold 的父目录添加到 sys.path
+sys.path.append(b_parent_dir)
 import overlock
+
 import torch.nn as nn
-from utils import custom_checkpoint_filter_fn
+
+from gradcam import *
 #==============================================
 
 from engine import train_one_epoch, evaluate
@@ -39,17 +52,17 @@ import utils
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Limuc-nets training and evaluation script', add_help=False)
-    parser.add_argument('--batch-size', default=32, type=int)
-    parser.add_argument('--epochs', default=1, type=int)
+    parser = argparse.ArgumentParser('CoAtNet training and evaluation script', add_help=False)
+    parser.add_argument('--batch-size', default=64, type=int)
+    parser.add_argument('--epochs', default=200, type=int)
     parser.add_argument('--unscale-lr', action='store_true')
     parser.add_argument('--nb-classes', default=4, type=int)
-    parser.add_argument('--model-name', default='coatnet_2', type=str, help='The abbreviation of model name')
+    parser.add_argument('--model-name', default='DeiT', type=str, help='The abbreviation of model name')
     parser.add_argument("--enable_wandb", choices=["True", "False"], default="True",
                     help="if True, logs training details into wandb platform. Wandb settings in the OS should be performed before using this option.")
 
     # Model parameters
-    parser.add_argument('--model', default='coatnet_2_rw_224', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='deit_base_distilled_patch16_224 ', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
 
@@ -80,7 +93,6 @@ def get_args_parser():
                         help='learning rate (default: 5e-4)')
     parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',               
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-
     parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',            # 预热阶段的学习率
                         help='warmup learning rate (default: 1e-6)')
     parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',              # 预热阶段的epoch数
@@ -89,7 +101,7 @@ def get_args_parser():
                         help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
     parser.add_argument('--patience-epochs', type=int, default=10, metavar='N',            # 设置 Plateau 调度器的耐心值（以 epoch 为单位）
                         help='patience epochs for Plateau LR scheduler (default: 10')
-    
+
     parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',           
                         help='epoch interval to decay LR')
     parser.add_argument('--decay-rate', '--dr', type=float, default=0.1, metavar='RATE',   
@@ -136,7 +148,7 @@ def get_args_parser():
     parser.add_argument('--data-path', default='../LIMUC/train_and_validation_sets/', type=str,      # 指定数据集的路径
                         help='dataset path')
     parser.add_argument('--test-path',default='../LIMUC/test_set/',type=str,help='test set path')
-    parser.add_argument('--data-set', default='IMNET', choices=['LIMUC'], type=str, help='Image Net dataset path')    # 指定数据集的名称
+    parser.add_argument('--data-set', default='IMNET', choices=['CIFAR', 'IMNET', 'INAT', 'INAT19','LIMUC'], type=str, help='Image Net dataset path')    # 指定数据集的名称
                         
     parser.add_argument('--inat-category', default='name',                                              # 指定iNaturalist 数据集的分类粒度
                         choices=['kingdom', 'phylum', 'class', 'order', 'supercategory', 'family', 'genus', 'name'],
@@ -169,46 +181,49 @@ def get_args_parser():
 #==========================================================run===============================================================================
 
 best_threshold = 0.0001                   # 判断验证集性能是否显著提升的阈值
+cms1 = []
+cms2 = []
+
+def custom_checkpoint_filter_fn(state_dict, model):
+        filtered_state_dict = {}
+        for key, value in state_dict.items():
+            if key in model.state_dict():
+                if model.state_dict()[key].shape == value.shape:
+                    filtered_state_dict[key] = value
+                else:
+                    print(f"Shape mismatch for {key}: model={model.state_dict()[key].shape}, checkpoint={value.shape}")
+            else:
+                print(f"Ignoring unmatched key: {key}")
+            
+        return filtered_state_dict
 
 def run_model(args,dataset_val,data_loader_train, data_loader_val,device,fold=0):
     # 创建模型
     print(f"Creating model: {args.model}")
     
-    if args.model_name == 'overlock_b':
-        model = create_model(
-            args.model,
-            pretrained=False,
-            num_classes=args.nb_classes,
-            drop_rate=args.drop,
-            drop_path_rate=args.drop_path,
-            drop_block_rate=None,
-#             img_size=args.input_size
-        )
-    else:
-        model = create_model(
-            args.model,
-            pretrained=True,
-            num_classes=args.nb_classes,
-            drop_rate=args.drop,
-            drop_path_rate=args.drop_path,
-            drop_block_rate=None,
-            img_size=args.input_size
-        )
-
-    if args.model_name == 'overlock':
-        weight_path = "../weights/overlock_b_in1k_224.pth"
-        state_dict = torch.load(weight_path,map_location='cpu')
-
-        # 过滤权重
-        filtered_weight = custom_checkpoint_filter_fn(state_dict, model)
-
-        model.load_state_dict(filtered_weight, strict=False)
+    model = create_model(
+        args.model,
+        pretrained=False,
+        num_classes=args.nb_classes,
+        drop_rate=args.drop,
+        drop_path_rate=args.drop_path,
+        drop_block_rate=None,
+#         img_size=args.input_size
+    )
     
+    weight_path = "../weights/overlock_b_in1k_224.pth"
+    state_dict = torch.load(weight_path,map_location='cpu')
+
+    # 过滤权重
+    filtered_weight = custom_checkpoint_filter_fn(state_dict, model)
+    
+    model.load_state_dict(filtered_weight, strict=False)
+
     """
     加载预训练权重并进行微调
     """                
     checkpoint = dict([])
-    if args.finetune:  
+    if args.finetune:
         if args.finetune.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.finetune, map_location='cpu', check_hash=True)
@@ -228,17 +243,17 @@ def run_model(args,dataset_val,data_loader_train, data_loader_val,device,fold=0)
                 print(f"Removing key {k} from pretrained checkpoint")
                 del checkpoint_model[k]
 
-        check_and_adjust_pos_embed(args,model,checkpoint_model,224)
+        check_and_adjust_pos_embed(model,checkpoint_model,224)
     
         '''
         加载权重到模型
         '''
         model.load_state_dict(checkpoint_model, strict=False)
         
-    '''
-    模型微调
-    '''
-    if args.model_name.split('_')[0] in ('coatnet','maxvit'):
+    if args.model_name.split("_")[0] in ('coatnet','maxvit'):
+        '''
+        模型微调
+        '''
     #     print("_______________________________________________________________________________")
     #     param_names = [name for name, _ in model.named_parameters()]
     #     print(param_names)
@@ -319,17 +334,6 @@ def run_model(args,dataset_val,data_loader_train, data_loader_val,device,fold=0)
     if args.loss == 'CDW':
         print("-------------------------------------using CDW loss--------------------------------------")
         criterion = ClassDistanceWeightedLoss(4,args.alpha)
-    elif args.loss == 'CDW-LMF':
-        print("-------------------------------------using CDW-LMF loss--------------------------------------")
-        alpha = float(1.5)
-        beta = float(1.0)
-
-        criterion1 = LDAMLoss_output(cls_num_list=m_list_wts, max_m=0.5,
-                             weight=torch.Tensor(m_list_wts).to(device), s=30)
-        criterion2 = focal_loss(device=device, alpha=torch.Tensor(m_list_wts).to(device)
-                               , gamma = 1.5)
-        criterion3 = ClassDistanceWeightedLoss(4,args.alpha)
-        criterion = CDW_LMF(criterion1, criterion2, criterion3, alpha=alpha, beta=beta)
     else:
         criterion = torch.nn.CrossEntropyLoss()
 
@@ -554,18 +558,27 @@ def main(args):
         index_calculation(args, y_true=y_true, y_probs=y_probs, y_pred=y_pred, r_true=r_true, r_probs=r_probs, r_pred=r_pred, i=11, group_id = group_id)
         
     else:
+        global cms1
+        global cms2
+        
         all_images_path, all_images_label,args.nb_classes = read_split_data_CV(args.data_path)
         
         skf = StratifiedKFold(n_splits=10,shuffle=True,random_state=42)
         
         fold_results = []
         
+        # 初始化存储所有折结果的容器
+        all_y_test_4 = []
+        all_y_score_4 = []
+        all_y_test_re = []
+        all_y_score_re = []
+        
         for fold,(train_index, val_index) in enumerate(skf.split(all_images_path,all_images_label)):
             print(f'=============================================Fold {fold+1}==============================================')
             
             if args.enable_wandb:
-                wandb.init(project="ulcerative-colitis-classification-coatnet_final",
-                           group=args.model_name + "" + "_final_maxvit_5" + group_id,
+                wandb.init(project="ulcerative-colitis-classification-coatnet_plot",
+                           group=args.model_name + "" + "_final_plot_overlock_5" + group_id,
                            save_code=True,
                            reinit=True)
                 wandb.run.name = "fold_" + str(fold)
@@ -616,10 +629,159 @@ def main(args):
             run_model(args,dataset_val,data_loader_train, data_loader_val,device,fold=fold)
                         
             # 每一个fold 进行一次测试集的测试，返回各个结果
-            y_true, y_probs, y_pred, r_true, r_probs, r_pred = get_test_set_results(args,device,fold, dataset_train, test_dir, args.model_name)
+            y_true, y_probs, y_pred, r_true, r_probs, r_pred = get_test_set_results(args,device,fold, dataset_train, test_dir, args.model_name,cms1,cms2)
 
             index_calculation(args,y_true=y_true, y_probs=y_probs, y_pred=y_pred, r_true=r_true, r_probs=r_probs, r_pred=r_pred, i=fold, group_id = group_id)
             
+            all_y_test_4.append(y_true)
+            y_probs_ = np.array(y_probs)
+            all_y_score_4.append(y_probs_)
+            
+            all_y_test_re.append(r_true)
+            r_probs_ = np.array(r_probs)
+            all_y_score_re.append(r_probs_)
+            
+            # 绘制混淆总的混淆矩阵
+            plot_cm_in_main(args,cms1,False, fold)         # 4-score
+            plot_cm_in_main(args,cms2,True,fold)          # remission
+
+            # 绘制ROC曲线
+            plot_roc_in_main(args, all_y_test_4, all_y_score_4, False)
+            plot_roc_in_main(args, all_y_test_re, all_y_score_re, True)
+        
+#-----------------------------------------------------------plot--------------------------------------------------------------
+
+def plot_cm_in_main(args, cms, is_remission, fold):      
+    #-------------------------绘制混淆矩阵----------------------------------
+    from provider import save_confusion_matrix
+    from sklearn.metrics import confusion_matrix
+
+    if is_remission:
+        root_path = f'../saves/save_image/cm/remission/'
+        class_names = ['remission', 'no_remission']
+    else:
+        root_path = f'../saves/save_image/cm/4_score/'
+        class_names = ['Mayo 0', 'Mayo 1', 'Mayo 2', 'Mayo 3']
+
+    os.makedirs(root_path, exist_ok=True)
+
+    save_path = os.path.join(root_path, f'{args.model_name}_all_fold.png')
+
+    cms = np.sum(cms,axis=0)
+
+    save_confusion_matrix(args, cms, class_names,save_path,fold, is_remission=is_remission)
+
+    #-----------------------------------------------------------------------
+
+
+def plot_roc_in_main(args, all_y_test, all_y_score, is_remission):
+    #--------------------------绘制ROC曲线-----------------------------------
+    from sklearn.preprocessing import label_binarize
+    from sklearn.metrics import roc_curve, auc, RocCurveDisplay
+    import matplotlib.pyplot as plt
+    
+#     plt.rcParams["font.weight"] = "bold"
+#     plt.rcParams["axes.labelweight"] = "bold"
+#     plt.rcParams["axes.titleweight"] = "bold"
+
+    classes = list(range(args.nb_classes))
+    # 合并所有折的结果
+    y_test_all = np.concatenate(all_y_test)
+    y_score_all = np.concatenate(all_y_score, axis=0)
+
+    if is_remission:
+        root_path = f'../saves/save_image/roc/total/remission/'
+        nb_classes = 1
+    else:
+        root_path = f'../saves/save_image/roc/total/4_score/'
+        nb_classes = args.nb_classes
+    
+    os.makedirs(root_path, exist_ok=True)
+    
+    path = os.path.join(root_path, f'{args.model_name}_total_roc.png')
+    
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+
+    # 二值化标签（One-vs-Rest）
+    y_test_bin = label_binarize(y_test_all, classes=classes)
+
+    # 计算每个类别的ROC曲线
+    plt.figure(figsize=(10, 10))
+    
+    for i in range(nb_classes):
+        if not is_remission:
+            # 绘制ROC曲线
+            # 计算FPR, TPR和AUC
+            fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_score_all[:, i])
+            roc_auc[i] = auc(fpr[i], tpr[i])
+            
+            display = RocCurveDisplay(fpr=fpr[i], tpr=tpr[i], roc_auc=roc_auc[i],
+                                     estimator_name=f'Mayo {classes[i]}')
+            display.plot(ax=plt.gca(), linestyle='-', linewidth=2, label=f'Mayo {classes[i]} (AUC={roc_auc[i]:.2f})')
+        else:
+            # 计算FPR, TPR和AUC
+            fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, 1-i], y_score_all)
+            roc_auc[i] = auc(fpr[i], tpr[i])
+
+            # 绘制ROC曲线
+            display = RocCurveDisplay(fpr=fpr[i], tpr=tpr[i], roc_auc=roc_auc[i],
+                                     estimator_name=f'remission')
+            display.plot(ax=plt.gca(), linestyle='-', linewidth=2, label=f'Remission (AUC={roc_auc[i]:.2f})')
+        
+    if not is_remission:
+        # ----------------------计算宏平均ROC曲线和AUC---------------------------
+        # 计算所有类别的平均FPR和TPR
+        all_fpr = np.unique(np.concatenate([fpr[i] for i in range(args.nb_classes)]))
+
+        # 插值所有类别的TPR到统一的FPR网格上
+        mean_tpr = np.zeros_like(all_fpr)
+        for i in range(args.nb_classes):
+            mean_tpr += np.interp(all_fpr, fpr[i], tpr[i])
+
+        # 计算平均TPR
+        mean_tpr /= args.nb_classes
+
+        # 计算宏平均的AUC
+        macro_auc = auc(all_fpr, mean_tpr)
+
+        # 绘制宏平均的ROC曲线
+        plt.plot(all_fpr, mean_tpr, label=f'Macro-average ROC (AUC = {macro_auc:.2f})',
+                 color='navy', linestyle='--', linewidth=2)
+    
+    
+    # 添加随机猜测线
+    plt.plot([0, 1], [0, 1], 'k--', label='Random guess (AUC = 0.5)')
+        
+    plt.xlabel("False Positive Rate", fontsize=38)
+    plt.ylabel("True Positive Rate", fontsize=38)
+    
+    # 调整 x 轴刻度标签（xticks）与 xlabel 的间距
+    plt.tick_params(axis='x', which='both', pad=15)  # x 轴方向增加 padding，使 xlabel 离刻度更远
+
+    # 调整 y 轴刻度标签（yticks）与 ylabel 的间距
+    plt.tick_params(axis='y', which='both', pad=15)  # y 轴方向增加 padding
+    
+    plt.tick_params(axis='both', which='major', labelsize=38)
+    
+#     plt.title(f"{args.model_name} ROC curve for Fold {id_}", fontsize=22,pad=20)
+#     plt.legend(loc="lower right")
+    if is_remission:
+        plt.legend(loc="lower right", prop={'size': 30})
+    else:
+        plt.legend(loc="lower right", prop={'size': 23})
+        
+    plt.axis("square")
+    plt.grid(True)
+    
+    plt.tick_params(axis='x', which='both', pad=10)  # x 轴方向增加 padding，使 xlabel 离刻度更远
+    plt.tick_params(axis='y', which='both', pad=10)  # y 轴方向增加 padding
+    
+    plt.tight_layout()
+    plt.subplots_adjust(left=0.2, bottom=0.15)
+    plt.savefig(path)
+    #-----------------------------------------------------------------------
 #--------------------------------------------------------------------------------------------------------------------------------------------
 
 

@@ -309,4 +309,3 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
 
 #     return train_images_path, train_images_label, val_images_path, val_images_label
     return all_images_path, all_images_label,len(data_class)
-

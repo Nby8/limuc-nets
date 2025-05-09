@@ -313,16 +313,3 @@ def get_mlist(cls_num_list, max_m=0.5):
     m_list = m_list * (max_m / np.max(m_list))
     
     return m_list
-
-def custom_checkpoint_filter_fn(state_dict, model):
-        filtered_state_dict = {}
-        for key, value in state_dict.items():
-            if key in model.state_dict():
-                if model.state_dict()[key].shape == value.shape:
-                    filtered_state_dict[key] = value
-                else:
-                    print(f"Shape mismatch for {key}: model={model.state_dict()[key].shape}, checkpoint={value.shape}")
-            else:
-                print(f"Ignoring unmatched key: {key}")
-            
-        return filtered_state_dict

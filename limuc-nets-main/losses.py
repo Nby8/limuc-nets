@@ -6,7 +6,7 @@ Implements the knowledge distillation loss
 import torch
 from torch.nn import functional as F
 from torch import Tensor
-import torch.nn as nn
+
 
 class ClassDistanceWeightedLoss(torch.nn.Module):
     """
@@ -23,8 +23,6 @@ class ClassDistanceWeightedLoss(torch.nn.Module):
         self.class_size = class_size
         self.power = power
         self.reduction = reduction
-        
-        print(f"--------------------------------CDW alpha = {self.power}-------------------------")
 
     def forward(self, input: Tensor, target: Tensor) -> Tensor:
         input_sm = input.softmax(dim=1)
