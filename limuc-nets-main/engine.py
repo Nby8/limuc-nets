@@ -6,13 +6,10 @@ Train and eval functions used in main.py
 import math
 import sys
 from typing import Iterable, Optional
-
 import torch
 
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
-
-from losses import DistillationLoss
 import utils
 from sklearn.metrics import cohen_kappa_score
 
@@ -21,13 +18,14 @@ from provider import get_dataset_mean_and_std,get_test_results_classification
 from ucmayo4 import UCMayo4
 import provider
 from provider import check_and_adjust_pos_embed
+from typing import Callable
 #==============================================
 
 
-def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
+def train_one_epoch(model: torch.nn.Module, criterion: Callable,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
-                    model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
+                    model_ema: Optional[ModelEma] = None, 
                     set_training_mode=True, args = None):
     model.train(set_training_mode)
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -35,50 +33,31 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     metric_logger.add_meter('acc', utils.SmoothedValue(window_size=1, fmt='{value: .4f}'))                              # 添加精度指标
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
-    
-    if args.cosub:
-        criterion = torch.nn.BCEWithLogitsLoss()
         
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        
-#         print("----------------------target shape----------------------------")
-#         print(targets.shape) #[64]
-#         print("--------------------------------------------------------------")
-        
-        if args.CDW:
-            mixup_fn=None
-    
-        if mixup_fn is not None:
-            samples, targets = mixup_fn(samples, targets)
-            
-        if args.cosub:
-            samples = torch.cat((samples,samples),dim=0)
-            
-        if args.bce_loss:
-            targets = targets.gt(0.0).type(targets.dtype)
          
         with torch.cuda.amp.autocast():
             outputs = model(samples)
-            if not args.cosub:
-                
-#                 print("----------------------------------shape--------------------------------")
-#                 output1,output2=outputs
-#                 print(output1.shape)       #[64,4]
-#                 print(output1[:10])
-#                 print(output2.shape)
-#                 print(output2[:10])        #[64,4]
-#                 print(targets.shape)
-#                 print(targets[:10])        #[64,4]
-#                 print("-----------------------------------------------------------------------")
-                loss = criterion(samples, outputs, targets)
+            
+            if isinstance(outputs, dict):
+                main_output = outputs['main']          # 主输出
+                aux_output = outputs['aux']           # 辅助输出
+            
+                # 计算主输出的损失
+                # main_sm = main_output.softmax(dim=1)
+                main_loss = criterion(main_output, targets)
+
+                # 计算辅助输出的损失
+                aux_loss = criterion(aux_output,targets)
+
+                # 计算总损失
+                total_loss = main_loss + 0.4 * aux_loss
+
+                loss = total_loss
             else:
-                outputs = torch.split(outputs, outputs.shape[0]//2, dim=0)
-                loss = 0.25 * criterion(outputs[0], targets) 
-                loss = loss + 0.25 * criterion(outputs[1], targets) 
-                loss = loss + 0.25 * criterion(outputs[0], outputs[1].detach().sigmoid())
-                loss = loss + 0.25 * criterion(outputs[1], outputs[0].detach().sigmoid()) 
+                loss = criterion(outputs, targets)
 
         loss_value = loss.item()
 
@@ -96,11 +75,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         torch.cuda.synchronize()
         if model_ema is not None:
             model_ema.update(model)
-                            
-        # 计算精度
-#         output, outputs_kd = outputs
         
-        _, predicted = torch.max(outputs, dim=1)    #获取预测类别，返回最大值及最大值对应的索引，outputs 为二维数组
+        if isinstance(outputs, dict):
+            _, predicted = torch.max(outputs['main'], dim=1)    #获取预测类别，返回最大值及最大值对应的索引，outputs 为二维数组
+        else:
+            _, predicted = torch.max(outputs, dim=1)    #获取预测类别，返回最大值及最大值对应的索引，outputs 为二维数组
+        
         correct = (predicted == targets).sum().item()   # 计算正确预测的数量
         accuracy = correct / targets.size(0)     #计算索引
 
@@ -112,7 +92,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
-    ### 将训练过程的各种指标（如损失、学习率等）的全局平均值返回给调用者（以字典的形式）
     '''
     {
     'loss': 0.4567,  # 全局平均损失
@@ -185,14 +164,6 @@ normalize: 数据标准化的转换操作
 import torchvision.transforms as transforms
 def get_test_set_results(args,device, id_, dataset_train, test_dir, model_name):
     
-#     get_dataset_mean_and_std 函数计算通道均值和标准差
-#     channel_means, channel_stds = get_dataset_mean_and_std(dataset_train)
-    
-#     print("=================================================================================================")
-#     print("channel_means",channel_means)
-#     print("channel_stds",channel_stds)
-#     print("=================================================================================================")
-    
     channel_means = (0.485, 0.456, 0.406)
     channel_stds = (0.229, 0.224, 0.225)
     
@@ -237,12 +208,7 @@ def get_test_set_results(args,device, id_, dataset_train, test_dir, model_name):
         '''
         checkpoint_model = checkpoint['model']
                         
-        check_and_adjust_pos_embed(model,checkpoint_model,224)
-    
-#         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
-#         print(model.state_dict().keys())  # 打印模型的所有参数键
-#         print(checkpoint_model.keys())   # 打印预训练权重的键
-#         print("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+        check_and_adjust_pos_embed(args,model,checkpoint_model,224)
         
         '''
         加载权重到模型
@@ -253,7 +219,7 @@ def get_test_set_results(args,device, id_, dataset_train, test_dir, model_name):
         checkpoint = torch.load("../save_log/bestAcc_checkpoint.pth")
         model_state_dict = checkpoint['model']
         
-        check_and_adjust_pos_embed(model,model_state_dict,224)
+        check_and_adjust_pos_embed(args,model,model_state_dict,224)
         
         model.load_state_dict(model_state_dict,weights_only=False,strict=False)
     model.to(device)

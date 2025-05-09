@@ -264,3 +264,65 @@ def init_distributed_mode(args):
                                          world_size=args.world_size, rank=args.rank)
     torch.distributed.barrier()       # 同步点，确保在初始化完成后所有进程同步执行
     setup_for_distributed(args.rank == 0)     # 外部函数，只有主进程执行打印输出
+
+    
+# -*- coding: utf-8 -*-
+"""
+@author: Adnan-Sadi
+"""
+import os
+import numpy as np
+import configparser
+
+"""
+Function gettign the number of images per class from
+a particular directory
+
+Args:
+    path: data directory
+   
+Returns:
+    img_per_cls: a list of image counts per class
+"""
+def get_img_num_per_cls(path):
+    folders = os.listdir(path)
+    img_per_cls = []
+
+    for folder in folders:
+        img_path = path +'/'+ folder
+        img_count = len(os.listdir(img_path))
+        img_per_cls.append(img_count)
+
+    return img_per_cls
+
+
+"""
+Function getting the m_list value of the LDAM loss. The m_list
+values are used as class weights in this study.  
+
+Args:
+    cls_num_list: list of image counts per class
+    max_m: 'maximum margin' hyper parameter used in lDAM loss, 
+            defaults to 0.5 
+    
+Returns:
+    m_list: m_list(class_weights/margins) value
+"""
+def get_mlist(cls_num_list, max_m=0.5):
+    m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))
+    m_list = m_list * (max_m / np.max(m_list))
+    
+    return m_list
+
+def custom_checkpoint_filter_fn(state_dict, model):
+        filtered_state_dict = {}
+        for key, value in state_dict.items():
+            if key in model.state_dict():
+                if model.state_dict()[key].shape == value.shape:
+                    filtered_state_dict[key] = value
+                else:
+                    print(f"Shape mismatch for {key}: model={model.state_dict()[key].shape}, checkpoint={value.shape}")
+            else:
+                print(f"Ignoring unmatched key: {key}")
+            
+        return filtered_state_dict

@@ -9,7 +9,6 @@ import time
 from scipy.stats import ranksums
 from torch import save
 
-# from dataset.ucmayo4 import UCMayo4
 from math import sqrt
 from statistics import mean, pstdev
 import numpy as np
@@ -520,98 +519,38 @@ def initialize_model(args,model_name, pretrained, num_classes):
     import torchvision.models as models
 
     model = None
-
-    if model_name == "VGG16_bn":
-        if pretrained:
-            model = models.vgg16_bn(pretrained=True)
-        else:
-            model = models.vgg16_bn()
-        in_features = model.classifier[6].in_features
-        model.classifier[6] = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "ResNet18":
-        if pretrained:
-            model = models.resnet18(pretrained=True)
-        else:
-            model = models.resnet18()
-        in_features = model.fc.in_features
-        model.fc = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "ResNet50":
-        if pretrained:
-            model = models.resnet50(pretrained=True)
-        else:
-            model = models.resnet50()
-        in_features = model.fc.in_features
-        model.fc = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "ResNet152":
-        if pretrained:
-            model = models.resnet152(pretrained=True)
-        else:
-            model = models.resnet152()
-        in_features = model.fc.in_features
-        model.fc = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "DenseNet121":
-        if pretrained:
-            model = models.densenet121(pretrained=True)
-        else:
-            model = models.densenet121()
-        in_features = model.classifier.in_features
-        model.classifier = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "Inception_v3":
-        if pretrained:
-            model = models.inception_v3(pretrained=True, transform_input=False)
-        else:
-            model = models.inception_v3(transform_input=False)
-        in_features = model.fc.in_features
-        aux_in_features = model.AuxLogits.fc.in_features
-
-        model.AuxLogits.fc = torch.nn.Linear(aux_in_features, num_classes)
-        model.fc = torch.nn.Linear(in_features, num_classes)
-
-    elif model_name == "mobilenet_v3_large":
-        if pretrained:
-            model = models.mobilenet_v3_large(pretrained=True)
-        else:
-            model = models.mobilenet_v3_large()
-        in_features = model.classifier[3].in_features
-        model.classifier[3] = torch.nn.Linear(in_features, num_classes)
-    
-    elif model_name == "DeiT":
-        # 加载预训练模型
-        model = create_model("deit_base_distilled_patch16_224", pretrained=False, num_classes=4)
-
-        # 调整分类头
-        if pretrained:
-            in_features = model.head.in_features  # 获取分类头的输入维度
-            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
-    elif model_name == "DeiT-384":
-        model = create_model("deit_base_distilled_patch16_384",pretrained=True, num_classes=4)
         
-        # 调整分类头
-        if pretrained:
-            in_features = model.head.in_features  # 获取分类头的输入维度
-            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
-    elif model_name == "Deit3_huge":
-        model = create_model("deit3_huge_patch14_224",pretrained=True, num_classes=4)
-        
-        # 调整分类头
-        if pretrained:
-            in_features = model.head.in_features  # 获取分类头的输入维度
-            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+    if model_name == "coatnet_0":
+        model = create_model("coatnet_0_rw_224",pretrained=True, num_classes=4)
+
+    elif model_name == "coatnet_1":
+        model = create_model("coatnet_1_rw_224",pretrained=True, num_classes=4)
+
     elif model_name == "coatnet_2":
         model = create_model("coatnet_2_rw_224",pretrained=True, num_classes=4)
-
-        # 调整分类头
-        if pretrained:
-            in_features = model.head.in_features  # 获取分类头的输入维度
-            model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+        
+    elif model_name == "coatnet_3":
+        model = create_model("coatnet_3_rw_224",pretrained=True, num_classes=4)
+        
+    elif model_name == "deit":
+        # 加载预训练模型
+        model = create_model("deit_base_distilled_patch16_224", pretrained=False, num_classes=4)
+            
+    elif model_name == 'maxvit':
+        model = create_model("maxvit_rmlp_base_rw_224.sw_in12k_ft_in1k",pretrained=True, num_classes=args.nb_classes)
+        
+    elif model_name == 'overlock_b':
+        model = create_model("overlock_b",pretrained=False, num_classes=4)
+        
     else:
         print("Invalid model name!")
         exit()
+        
+    # 调整分类头
+    if pretrained:
+        in_features = model.head.in_features  # 获取分类头的输入维度
+        model.head = torch.nn.Linear(in_features, num_classes)  # 替换分类头
+    
 
     return model
 
@@ -980,7 +919,6 @@ def setup_reproducability(seed):
 
 
 def get_dataset_mean_and_std(trainingSet):
-#     trainingSet = UCMayo4(dataset_dir)
     R_total = 0
     G_total = 0
     B_total = 0
@@ -1312,13 +1250,20 @@ def index_calculation(args, *,y_true, y_probs, y_pred, r_true, r_probs, r_pred, 
 #=======================================================================================================================================
 
 # 假设 model 是通过 timm.create_model 创建的
-def check_and_adjust_pos_embed(model, checkpoint_model, new_input_size):
+def check_and_adjust_pos_embed(args, model, checkpoint_model, new_input_size):
     # 获取模型的补丁数量和嵌入维度
     if hasattr(model, 'patch_embed'):
         num_patches = model.patch_embed.num_patches
         print(f"------------------num_patches:{num_patches}-----------------------")
         embedding_size = model.pos_embed.shape[-1]
         print(f"++++++++++++++++++++++embedding_size : {embedding_size}++++++++++++++++++")
+        
+        num_extra_tokens = 1
+        
+        if args.model_name == 'deit':
+            num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+            
+        patch_size = 16
     else:
         # 假设模型使用卷积层生成补丁嵌入
         input_size = new_input_size
@@ -1326,7 +1271,7 @@ def check_and_adjust_pos_embed(model, checkpoint_model, new_input_size):
         num_patches = (input_size // patch_size) ** 2
         embedding_size = 768
 
-    num_extra_tokens = 1
+        num_extra_tokens = 1
 
     # 初始化或提取位置嵌入
     if 'pos_embed' in checkpoint_model:

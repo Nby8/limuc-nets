@@ -36,49 +36,6 @@ import torch.optim.lr_scheduler as lr_scheduler   #用于调整学习率的调�
 from torch.utils.tensorboard import SummaryWriter     #用于将训练日志输出到Tensorboard以便可视化
 from torchvision import transforms       #PyTorch的计算机视觉工具集，提供图像变换、预处理等功能。
 
-
-class INatDataset(ImageFolder):
-    def __init__(self, root, train=True, year=2018, transform=None, target_transform=None,
-                 category='name', loader=default_loader):
-        self.transform = transform
-        self.loader = loader
-        self.target_transform = target_transform
-        self.year = year
-        # assert category in ['kingdom','phylum','class','order','supercategory','family','genus','name']
-        path_json = os.path.join(root, f'{"train" if train else "val"}{year}.json')
-        with open(path_json) as json_file:
-            data = json.load(json_file)
-
-        with open(os.path.join(root, 'categories.json')) as json_file:
-            data_catg = json.load(json_file)
-
-        path_json_for_targeter = os.path.join(root, f"train{year}.json")
-
-        with open(path_json_for_targeter) as json_file:
-            data_for_targeter = json.load(json_file)
-
-        targeter = {}
-        indexer = 0
-        for elem in data_for_targeter['annotations']:
-            king = []
-            king.append(data_catg[int(elem['category_id'])][category])
-            if king[0] not in targeter.keys():
-                targeter[king[0]] = indexer
-                indexer += 1
-        self.nb_classes = len(targeter)
-
-        self.samples = []
-        for elem in data['images']:
-            cut = elem['file_name'].split('/')
-            target_current = int(cut[2])
-            path_current = os.path.join(root, cut[0], cut[2], cut[3])
-
-            categors = data_catg[target_current]
-            target_current_true = targeter[categors[category]]
-            self.samples.append((path_current, target_current_true))
-
-    # __getitem__ and __len__ inherited from ImageFolder
-
 # 根据传入的参数选择并构建不同的数据集
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
@@ -141,12 +98,6 @@ def build_transform(is_train, args):
             # RandomCrop
             transform.transforms[0] = transforms.RandomCrop(
                 args.input_size, padding=4)
-#         else:
-#             size = int(args.input_size / args.eval_crop_ratio)  # eval_crop_ratio——评估时的裁剪比例 0.875
-#         t.append(
-#             transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images，插值方法3——双三次插值
-#         )
-#         t.append(transforms.CenterCrop(args.input_size))
         
         return transform
 
@@ -164,14 +115,13 @@ def build_transform(is_train, args):
 
 
 #======================================================================================================
-#将类别名称（字符串）映射到整数索引
 def create_class_to_index_mapping(classes):
     """创建类别名称到索引的映射"""
     class_to_index = {cls: idx for idx, cls in enumerate(sorted(set(classes)))}
     return class_to_index
 
 from torch.utils.data import Dataset
-#继承torch.utils.data.Dataset, 用于创建可迭代的数据集对象
+
 class MyDataSet(Dataset):
     """自定义数据集"""
 
@@ -211,10 +161,10 @@ def read_split_data_no_CV(root: str, val_rate: float = 0.1):
     assert os.path.exists(root), "dataset root: {} does not exist.".format(root)
 
     # 列出文件夹下的所有文件，并获取拼接完整路径
-    flower_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
-    flower_class.sort()
+    data_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
+    data_class.sort()
 
-    class_indices = dict((k, v) for v, k in enumerate(flower_class))
+    class_indices = dict((k, v) for v, k in enumerate(data_class))
     print(class_indices)
 
     #json.dumps():将Python对象（字典、列表）编码为JSON格式字符串）
@@ -231,7 +181,7 @@ def read_split_data_no_CV(root: str, val_rate: float = 0.1):
     supported = [".jpg", ".JPG", ".png", ".PNG",".bmp"]  # 支持的文件后缀类型
 
     # 遍历每个文件夹下的文件
-    for cla in flower_class:
+    for cla in data_class:
         cla_path = os.path.join(root, cla)
         # 遍历获取supported支持的所有文件路径
         images = [os.path.join(root, cla, i) for i in os.listdir(cla_path)
@@ -270,9 +220,9 @@ def read_split_data_no_CV(root: str, val_rate: float = 0.1):
     plot_image = False
     if plot_image:
         # 绘制每种类别个数柱状图
-        plt.bar(range(len(flower_class)), every_class_num, align='center')
+        plt.bar(range(len(data_class)), every_class_num, align='center')
         # 将横坐标0,1,2,3,4替换为相应的类别名称
-        plt.xticks(range(len(flower_class)), flower_class)
+        plt.xticks(range(len(data_class)), data_class)
         # 在柱状图上添加数值标签
         for i, v in enumerate(every_class_num):
             plt.text(x=i, y=v + 5, s=str(v), ha='center')
@@ -281,7 +231,7 @@ def read_split_data_no_CV(root: str, val_rate: float = 0.1):
         # 设置y坐标
         plt.ylabel('number of images')
         # 设置柱状图的标题
-        plt.title('flower class distribution')
+        plt.title('data class distribution')
         plt.show()
 
     return train_images_path, train_images_label, val_images_path, val_images_label
@@ -296,10 +246,10 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
     assert os.path.exists(root), "dataset root: {} does not exist.".format(root)
 
     # 列出文件夹下的所有文件，并获取拼接完整路径
-    flower_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
-    flower_class.sort()
+    data_class = [cla for cla in os.listdir(root) if os.path.isdir(os.path.join(root, cla))]
+    data_class.sort()
 
-    class_indices = dict((k, v) for v, k in enumerate(flower_class))
+    class_indices = dict((k, v) for v, k in enumerate(data_class))
     print(class_indices)
 
     #json.dumps():将Python对象（字典、列表）编码为JSON格式字符串）
@@ -308,11 +258,6 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
         json_file.write(json_str)
     
     #-------------------------------------------------
-
-#     train_images_path = []  # 存储训练集的所有图片路径
-#     train_images_label = []  # 存储训练集图片对应索引信息
-#     val_images_path = []  # 存储验证集的所有图片路径
-#     val_images_label = []  # 存储验证集图片对应索引信息
     every_class_num = []  # 存储每个类别的样本总数
 
     
@@ -323,7 +268,7 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
     supported = [".jpg", ".JPG", ".png", ".PNG",".bmp"]  # 支持的文件后缀类型
 
     # 遍历每个文件夹下的文件
-    for cla in flower_class:
+    for cla in data_class:
         cla_path = os.path.join(root, cla)
         # 遍历获取supported支持的所有文件路径
         images = [os.path.join(root, cla, i) for i in os.listdir(cla_path)
@@ -336,45 +281,19 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
         image_class = class_indices[cla]
         # 记录该类别的样本数量
         every_class_num.append(len(images))
-
-#--------------------------------------------------------------------
-
-#         # 按比例随机采样验证样本
-#         val_path = random.sample(images, k=int(len(images) * val_rate))
-
-#         for img_path in images:
-#             if img_path in val_path:  # 如果该路径在采样的验证集样本中则存入验证集
-#                 val_images_path.append(img_path)
-#                 val_images_label.append(image_class)
-#             else:  # 否则存入训练集
-#                 train_images_path.append(img_path)
-#                 train_images_label.append(image_class)
-
+        
         all_images_path.extend(images)
         all_images_label.extend([image_class] * len(images))
 
-#--------------------------------------------------------------------
-
     print("{} images were found in the dataset.".format(sum(every_class_num)))
-    
-#--------------------------------------------------------------------
-
-#     print("{} images for training.".format(len(train_images_path)))
-#     print("{} images for validation.".format(len(val_images_path)))
-
-#     #校验训练集和数据集是否有数据
-#     assert len(train_images_path) > 0, "number of training images must greater than 0."
-#     assert len(val_images_path) > 0, "number of validation images must greater than 0."
-
-#--------------------------------------------------------------------
 
     #绘制每种类别样本数量的柱状图
     plot_image = False
     if plot_image:
         # 绘制每种类别个数柱状图
-        plt.bar(range(len(flower_class)), every_class_num, align='center')
+        plt.bar(range(len(data_class)), every_class_num, align='center')
         # 将横坐标0,1,2,3,4替换为相应的类别名称
-        plt.xticks(range(len(flower_class)), flower_class)
+        plt.xticks(range(len(data_class)), data_class)
         # 在柱状图上添加数值标签
         for i, v in enumerate(every_class_num):
             plt.text(x=i, y=v + 5, s=str(v), ha='center')
@@ -383,10 +302,11 @@ def read_split_data_CV(root: str, val_rate: float = 0.2):
         # 设置y坐标
         plt.ylabel('number of images')
         # 设置柱状图的标题
-        plt.title('flower class distribution')
+        plt.title('data class distribution')
         plt.show()
 
 #--------------------------------------------------------------------
 
 #     return train_images_path, train_images_label, val_images_path, val_images_label
-    return all_images_path, all_images_label,len(flower_class)
+    return all_images_path, all_images_label,len(data_class)
+
